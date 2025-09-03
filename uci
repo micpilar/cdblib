@@ -1,0 +1,2 @@
+#!/bin/bash
+python3 cdb2uci.py -c 32 -ee
