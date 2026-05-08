@@ -46,6 +46,11 @@ class fens2cdb:
         self.cdb = cdblib.cdbAPI(concurrency, user, not suppressErrors)
         self.unknown = cdblib.AtomicInteger()
 
+        # ANSI color codes for verbose output
+        self.GREEN = '\033[92m'
+        self.BLUE = '\033[94m'
+        self.RESET = '\033[0m'
+
     async def parse_all(self, batchSize=None):
         if self.display:
             print(
@@ -85,7 +90,7 @@ class fens2cdb:
                         "They have now been queued for analysis.",
                         file=self.display,
                     )
-                else:
+                elif self.enqueue >= 2:
                     print(
                         "They have been queued for analysis, and their evals have been obtained.",
                         file=self.display,
@@ -95,19 +100,46 @@ class fens2cdb:
         if line.startswith("#"):  # ignore comments
             return line
         fen = " ".join(line.split()[:4])  # cdb ignores move counters anyway
-        r = await self.cdb.queryscore(fen)
+        r = await (
+            self.cdb.queryscore(fen) if self.enqueue >= 0 else self.cdb.readscore(fen)
+        )
         score = cdblib.json2eval(r)
-        if r.get("status") == "unknown" and score == "":
+
+        # Check if the position was initially unknown
+        initial_unknown = (r.get("status") == "unknown" and score == "")
+        if initial_unknown:
             self.unknown.inc()
             timeout = 5
-            while self.enqueue and r["status"] == "unknown":
+            requested_eval = self.enqueue >= 1
+            if self.enqueue >= 1:
                 r = await self.cdb.queue(fen)
                 if self.enqueue >= 2:
-                    await asyncio.sleep(timeout)
-                    r = await self.cdb.queryscore(fen)
-                    score = cdblib.json2eval(r)
-                    if timeout < 120:
-                        timeout = min(timeout * 1.5, 120)
+                    while r["status"] == "unknown":
+                        await asyncio.sleep(timeout)
+                        r = await self.cdb.queryscore(fen)
+                        score = cdblib.json2eval(r)
+                        if timeout < 120:
+                            timeout = min(timeout * 1.5, 120)
+        else:
+            requested_eval = False
+
+        # Verbose colored output (if not quiet)
+        if self.display:
+            if not initial_unknown:
+                # Already in database
+                msg = f"{self.BLUE}FEN: {fen} -> eval: {score}{self.RESET}"
+            else:
+                # Not in database
+                if requested_eval:
+                    if score:  # Got an eval after enqueue and waiting
+                        msg = f"{self.GREEN}FEN: {fen} -> queued for analysis, eval: {score}{self.RESET}"
+                    else:      # Queued but no eval yet (enqueue=1)
+                        msg = f"{self.GREEN}FEN: {fen} -> queued for analysis (eval pending){self.RESET}"
+                else:          # Not found and not queued
+                    msg = f"{self.GREEN}FEN: {fen} -> not in database{self.RESET}"
+            print(msg, file=self.display, flush=True)
+
+        # Build the output line (same logic as before)
         if score == "":
             return line
         if self.shortFormat:
@@ -141,7 +173,7 @@ async def main():
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress all unnecessary output to the screen.",
+        help="Suppress all unnecessary output to the screen (including per‑FEN progress).",
     )
     parser.add_argument(
         "-e",
@@ -175,7 +207,21 @@ async def main():
         action="store_true",
         help="Suppress error messages from cdblib.",
     )
+    parser.add_argument(
+        "--suppressLearning",
+        action="store_true",
+        help="Suppress cdb's automatic learning.",
+    )
     args = parser.parse_args()
+
+    if args.suppressLearning:
+        if args.enqueue:
+            print(
+                "Options --suppressLearning and --enqueue are exclusive.",
+                file=sys.stderr,
+            )
+            quit()
+        args.enqueue = -1
 
     f2c = fens2cdb(
         args.input,
