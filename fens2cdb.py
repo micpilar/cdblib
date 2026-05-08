@@ -17,7 +17,7 @@ class fens2cdb:
         suppressErrors,
     ):
         self.input = filename
-        self.lines = []
+        self.lines =[]
         self.scored = 0
         with cdblib.open_file_rt(filename) as f:
             for line in f:
@@ -105,23 +105,23 @@ class fens2cdb:
         )
         score = cdblib.json2eval(r)
 
-        # Check if the position was initially unknown
+        # Track for colored output
         initial_unknown = (r.get("status") == "unknown" and score == "")
+        requested_eval = False
+
         if initial_unknown:
             self.unknown.inc()
             timeout = 5
-            requested_eval = self.enqueue >= 1
-            if self.enqueue >= 1:
+            # Logic strictly from Script 2
+            while self.enqueue >= 1 and r["status"] == "unknown":
+                requested_eval = True
                 r = await self.cdb.queue(fen)
                 if self.enqueue >= 2:
-                    while r["status"] == "unknown":
-                        await asyncio.sleep(timeout)
-                        r = await self.cdb.queryscore(fen)
-                        score = cdblib.json2eval(r)
-                        if timeout < 120:
-                            timeout = min(timeout * 1.5, 120)
-        else:
-            requested_eval = False
+                    await asyncio.sleep(timeout)
+                    r = await self.cdb.queryscore(fen)
+                    score = cdblib.json2eval(r)
+                    if timeout < 120:
+                        timeout = min(timeout * 1.5, 120)
 
         # Verbose colored output (if not quiet)
         if self.display:
@@ -139,7 +139,6 @@ class fens2cdb:
                     msg = f"{self.GREEN}FEN: {fen} -> not in database{self.RESET}"
             print(msg, file=self.display, flush=True)
 
-        # Build the output line (same logic as before)
         if score == "":
             return line
         if self.shortFormat:
@@ -173,7 +172,7 @@ async def main():
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress all unnecessary output to the screen (including per‑FEN progress).",
+        help="Suppress all unnecessary output to the screen.",
     )
     parser.add_argument(
         "-e",
